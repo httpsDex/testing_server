@@ -51,6 +51,7 @@ const authenticate = (req, res, next) => {
     });
 };
 
+
 // ✅ Role-based middleware
 const requireRole = (roles) => (req, res, next) => {
     if (!roles.includes(req.user.role_name)) {
@@ -70,9 +71,7 @@ app.post("/api/auth/login", (req, res) => {
     }
 
     const query = `
-        SELECT u.*, r.role_name, s.*, 
-               CONCAT(s.first_name, ' ', s.last_name) as full_name,
-               s.department
+        SELECT u.*, r.role_name, s.*, CONCAT(s.first_name, ' ', s.last_name) as full_name, s.department
         FROM users u
         JOIN user_roles r ON u.role_id = r.role_id
         LEFT JOIN staff s ON u.staff_id = s.staff_id
@@ -154,7 +153,7 @@ app.get("/api/dashboard", authenticate, (req, res) => {
                 SUM(CASE WHEN te.evaluation_status = 'draft' THEN 1 ELSE 0 END) as pending_evaluations,
                 SUM(CASE WHEN te.evaluation_status = 'completed' THEN 1 ELSE 0 END) as completed_evaluations,
                 (SELECT COUNT(*) FROM certificates WHERE status = 'pending' AND staff_id IN 
-                    (SELECT staff_id FROM staff WHERE category_id = 1 AND department_head_id = ?)) as pending_certificates
+                (SELECT staff_id FROM staff WHERE category_id = 1 AND department_head_id = ?)) as pending_certificates
             FROM staff s
             LEFT JOIN teaching_evaluations te ON s.staff_id = te.staff_id AND te.period_id = 1
             WHERE s.category_id = 1 AND s.department_head_id = ?
@@ -167,7 +166,7 @@ app.get("/api/dashboard", authenticate, (req, res) => {
                 SUM(CASE WHEN nte.evaluation_status = 'draft' THEN 1 ELSE 0 END) as pending_evaluations,
                 SUM(CASE WHEN nte.evaluation_status = 'completed' THEN 1 ELSE 0 END) as completed_evaluations,
                 (SELECT COUNT(*) FROM certificates WHERE status = 'pending' AND staff_id IN 
-                    (SELECT staff_id FROM staff WHERE category_id = 2 AND department_head_id = ?)) as pending_certificates
+                (SELECT staff_id FROM staff WHERE category_id = 2 AND department_head_id = ?)) as pending_certificates
             FROM staff s
             LEFT JOIN nonteaching_evaluations nte ON s.staff_id = nte.staff_id AND nte.period_id = 1
             WHERE s.category_id = 2 AND s.department_head_id = ?
@@ -250,6 +249,66 @@ app.get("/api/non-teaching-evaluations", authenticate, requireRole(["Non-Teachin
         res.json(results);
     });
 });
+
+
+// ====================== SUMMARY & RANKING ENDPOINTS ======================
+
+// Get summary reports
+app.get("/api/teaching-summary", authenticate, requireRole(["Teaching Evaluator"]), (req, res) => {
+    let query = "";
+    let params = [];
+
+        query = `
+            SELECT 
+                s.staff_id,
+                CONCAT(s.first_name, ' ', s.last_name) as employee_name,
+                s.department as department,
+                te.final_total_points as total_score,
+                te.evaluation_status as status
+            FROM staff s
+            LEFT JOIN teaching_evaluations te ON s.staff_id = te.staff_id AND te.period_id = 1
+            WHERE s.category_id = 1 AND s.department_head_id = ?
+            ORDER BY s.first_name, s.last_name DESC
+        `;
+        params = [req.user.staff_id];
+        connection.query(query, params, (err, results) => {
+        if (err) {
+            console.error("Summary query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+        res.json(results);
+    });
+});
+
+
+
+app.get("/api/non-teaching-summary", authenticate, requireRole(["Non-Teaching Evaluator"]),(req, res) => {
+    let query = "";
+    let params = [];
+
+        query = `
+            SELECT 
+                s.staff_id,
+                CONCAT(s.first_name, ' ', s.last_name) as employee_name,
+                s.department as department,
+                nte.final_total_points as total_score,
+                nte.evaluation_status as status
+            FROM staff s
+            LEFT JOIN nonteaching_evaluations nte ON s.staff_id = nte.staff_id AND nte.period_id = 1
+            WHERE s.category_id = 2 AND s.department_head_id = ?
+            ORDER BY s.first_name, s.last_name DESC
+        `;
+        params = [req.user.staff_id];
+
+    connection.query(query, params, (err, results) => {
+        if (err) {
+            console.error("Summary query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+        res.json(results);
+    });
+});
+
 
 // ====================== PEER EVALUATION ENDPOINTS ======================
 
@@ -516,51 +575,7 @@ app.put("/api/certificates/:id/status", authenticate, (req, res) => {
     });
 });
 
-// ====================== SUMMARY & RANKING ENDPOINTS ======================
 
-// Get summary reports
-app.get("/api/summary", authenticate, (req, res) => {
-    let query = "";
-    let params = [];
-
-    if (req.user.role_name === "Teaching Evaluator") {
-        query = `
-            SELECT 
-                s.staff_id,
-                CONCAT(s.first_name, ' ', s.last_name) as employee_name,
-                s.department as department,
-                te.final_total_points as total_score,
-                te.evaluation_status as status
-            FROM staff s
-            LEFT JOIN teaching_evaluations te ON s.staff_id = te.staff_id AND te.period_id = 1
-            WHERE s.category_id = 1 AND s.department_head_id = ?
-            ORDER BY s.first_name, s.last_name DESC
-        `;
-        params = [req.user.staff_id];
-    } else if (req.user.role_name === "Non-Teaching Evaluator") {
-        query = `
-            SELECT 
-                s.staff_id,
-                CONCAT(s.first_name, ' ', s.last_name) as employee_name,
-                s.department as department,
-                nte.final_total_points as total_score,
-                nte.evaluation_status as status
-            FROM staff s
-            LEFT JOIN nonteaching_evaluations nte ON s.staff_id = nte.staff_id AND nte.period_id = 1
-            WHERE s.category_id = 2 AND s.department_head_id = ?
-            ORDER BY s.first_name, s.last_name DESC
-        `;
-        params = [req.user.staff_id];
-    }
-
-    connection.query(query, params, (err, results) => {
-        if (err) {
-            console.error("Summary query error:", err);
-            return res.status(500).json({ message: "Server error" });
-        }
-        res.json(results);
-    });
-});
 
 // Get employee rankings
 app.get("/api/rankings", authenticate, (req, res) => {
@@ -694,8 +709,602 @@ app.get("/api/evaluation-periods", authenticate, (req, res) => {
     });
 });
 
+
+
+
+
+
+
+// Add these endpoints to your existing server.js file
+
+// ====================== EMPLOYEE DASHBOARD ENDPOINTS ======================
+
+// Get employee dashboard statistics
+app.get("/api/employee/dashboard", authenticate, requireRole(["Teaching Employee", "Non-Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+    const roleId = req.user.role_id;
+
+    let query = "";
+    let params = [staffId];
+
+    if (roleId === 3) { // Teaching Employee
+        query = `
+            SELECT 
+                te.final_total_points as current_score,
+                (SELECT COUNT(*) FROM certificates WHERE staff_id = ? AND status IN ('accepted', 'pending', 'rejected')) as certificate_count
+            FROM teaching_evaluations te
+            WHERE te.staff_id = ? AND te.period_id = 1
+            LIMIT 1
+        `;
+        params = [staffId, staffId];
+    } else if (roleId === 4) { // Non-Teaching Employee
+        query = `
+            SELECT 
+                nte.final_total_points as current_score,
+                (SELECT COUNT(*) FROM certificates WHERE staff_id = ? AND status IN ('accepted', 'pending', 'rejected')) as certificate_count,
+                (SELECT COUNT(*) FROM peer_evaluation_assignments WHERE evaluator_staff_id = ? AND assignment_status = 'pending') as pending_evaluations,
+                (SELECT COUNT(*) FROM peer_evaluation_assignments WHERE evaluator_staff_id = ? AND assignment_status = 'completed') as completed_evaluations
+            FROM nonteaching_evaluations nte
+            WHERE nte.staff_id = ? AND nte.period_id = 1
+            LIMIT 1
+        `;
+        params = [staffId, staffId, staffId, staffId];
+    }
+
+    connection.query(query, params, (err, results) => {
+        if (err) {
+            console.error("Employee dashboard query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        const stats = results[0] || {
+            current_score: 0,
+            certificate_count: 0,
+            pending_evaluations: 0,
+            completed_evaluations: 0
+        };
+
+        res.json({
+            currentScore: stats.current_score ? stats.current_score.toFixed(2) + '%' : 'N/A',
+            certificateCount: stats.certificate_count || 0,
+            pendingEvaluations: stats.pending_evaluations || 0,
+            completedEvaluations: stats.completed_evaluations || 0
+        });
+    });
+});
+
+// ====================== PEER EVALUATION ENDPOINTS (For Non-Teaching Employees) ======================
+
+// Get assigned peer evaluations for employee to complete
+app.get("/api/employee/peer-evaluations", authenticate, requireRole(["Non-Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            pea.assignment_id,
+            pea.evaluatee_staff_id,
+            CONCAT(s.first_name, ' ', s.last_name) as employee_name,
+            s.department,
+            pea.assignment_status as status,
+            pea.assigned_date,
+            pe.peer_eval_id,
+            pe.evaluation_status
+        FROM peer_evaluation_assignments pea
+        JOIN staff s ON pea.evaluatee_staff_id = s.staff_id
+        LEFT JOIN peer_evaluations pe ON pea.assignment_id = pe.assignment_id
+        WHERE pea.evaluator_staff_id = ? AND pea.period_id = 1
+        ORDER BY pea.assignment_status ASC, pea.assigned_date DESC
+    `;
+
+    connection.query(query, [staffId], (err, results) => {
+        if (err) {
+            console.error("Employee peer evaluations query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        const evaluations = results.map(row => ({
+            assignment_id: row.assignment_id,
+            employee_name: row.employee_name,
+            department: row.department,
+            status: row.evaluation_status || 'pending'
+        }));
+
+        res.json(evaluations);
+    });
+});
+
+// Submit peer evaluation
+app.post("/api/employee/peer-evaluation", authenticate, requireRole(["Non-Teaching Employee"]), (req, res) => {
+    const { employee, communication, teamwork, problemSolving, comments } = req.body;
+    const staffId = req.user.staff_id;
+
+    // First, get the assignment_id
+    const getAssignmentQuery = `
+        SELECT pea.assignment_id
+        FROM peer_evaluation_assignments pea
+        JOIN staff s ON pea.evaluatee_staff_id = s.staff_id
+        WHERE pea.evaluator_staff_id = ? 
+        AND CONCAT(s.first_name, ' ', s.last_name) = ?
+        AND pea.period_id = 1
+        LIMIT 1
+    `;
+
+    connection.query(getAssignmentQuery, [staffId, employee], (err, results) => {
+        if (err) {
+            console.error("Get assignment error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        if (results.length === 0) {
+            return res.status(404).json({ message: "Assignment not found" });
+        }
+
+        const assignmentId = results[0].assignment_id;
+
+        // Insert peer evaluation
+        const insertQuery = `
+            INSERT INTO peer_evaluations 
+            (assignment_id, evaluation_status, submitted_date, comments, 
+             job_attitude, work_habits, personal_relation)
+            VALUES (?, 'submitted', NOW(), ?, ?, ?, ?)
+        `;
+
+        connection.query(insertQuery, [
+            assignmentId,
+            comments,
+            communication,
+            teamwork,
+            problemSolving
+        ], (err, result) => {
+            if (err) {
+                console.error("Insert peer evaluation error:", err);
+                return res.status(500).json({ message: "Server error" });
+            }
+
+            // Update assignment status
+            const updateAssignmentQuery = `
+                UPDATE peer_evaluation_assignments 
+                SET assignment_status = 'completed', completed_date = NOW()
+                WHERE assignment_id = ?
+            `;
+
+            connection.query(updateAssignmentQuery, [assignmentId], (err) => {
+                if (err) {
+                    console.error("Update assignment error:", err);
+                }
+            });
+
+            res.json({ message: "Evaluation submitted successfully" });
+        });
+    });
+});
+
+// ====================== TEACHING EVALUATION SUMMARY ENDPOINTS ======================
+
+// Get teaching evaluation summary for employee
+app.get("/api/employee/teaching-summary", authenticate, requireRole(["Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            ep.period_name as period,
+            CONCAT(evaluator.first_name, ' ', evaluator.last_name) as evaluator,
+            tes1.score as teaching_competence,
+            tes2.score as effectiveness,
+            tes3.score as professional_growth,
+            te.final_total_points as total_score,
+            te.evaluation_status as status,
+            te.evaluation_id,
+            te.evaluation_date
+        FROM teaching_evaluations te
+        JOIN evaluation_periods ep ON te.period_id = ep.period_id
+        JOIN users u ON te.evaluator_user_id = u.user_id
+        JOIN staff evaluator ON u.staff_id = evaluator.staff_id
+        LEFT JOIN teaching_evaluation_scores tes1 ON te.evaluation_id = tes1.evaluation_id AND tes1.type_id = 1
+        LEFT JOIN teaching_evaluation_scores tes2 ON te.evaluation_id = tes2.evaluation_id AND tes2.type_id = 2
+        LEFT JOIN teaching_evaluation_scores tes3 ON te.evaluation_id = tes3.evaluation_id AND tes3.type_id = 4
+        WHERE te.staff_id = ?
+        ORDER BY te.evaluation_date DESC
+        LIMIT 10
+    `;
+
+    connection.query(query, [staffId], (err, results) => {
+        if (err) {
+            console.error("Teaching summary query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        res.json(results);
+    });
+});
+
+// Get detailed teaching evaluation report
+app.get("/api/employee/teaching-report/:id", authenticate, requireRole(["Teaching Employee"]), (req, res) => {
+    const evaluationId = req.params.id;
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            te.*,
+            s.first_name,
+            s.last_name,
+            s.department,
+            s.position,
+            ep.period_name,
+            ep.academic_year,
+            CONCAT(evaluator.first_name, ' ', evaluator.last_name) as evaluator_name,
+            tes1.score as student_evaluation,
+            tes2.score as peer_evaluation,
+            tes3.score as dean_evaluation,
+            tes4.score as professional_growth,
+            tes5.score as school_services
+        FROM teaching_evaluations te
+        JOIN staff s ON te.staff_id = s.staff_id
+        JOIN evaluation_periods ep ON te.period_id = ep.period_id
+        JOIN users u ON te.evaluator_user_id = u.user_id
+        JOIN staff evaluator ON u.staff_id = evaluator.staff_id
+        LEFT JOIN teaching_evaluation_scores tes1 ON te.evaluation_id = tes1.evaluation_id AND tes1.type_id = 1
+        LEFT JOIN teaching_evaluation_scores tes2 ON te.evaluation_id = tes2.evaluation_id AND tes2.type_id = 2
+        LEFT JOIN teaching_evaluation_scores tes3 ON te.evaluation_id = tes3.evaluation_id AND tes3.type_id = 3
+        LEFT JOIN teaching_evaluation_scores tes4 ON te.evaluation_id = tes4.evaluation_id AND tes4.type_id = 4
+        LEFT JOIN teaching_evaluation_scores tes5 ON te.evaluation_id = tes5.evaluation_id AND tes5.type_id = 5
+        WHERE te.evaluation_id = ? AND te.staff_id = ?
+        LIMIT 1
+    `;
+
+    connection.query(query, [evaluationId, staffId], (err, results) => {
+        if (err) {
+            console.error("Teaching report query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        if (results.length === 0) {
+            return res.status(404).json({ message: "Evaluation not found" });
+        }
+
+        res.json(results[0]);
+    });
+});
+
+// ====================== NON-TEACHING EVALUATION SUMMARY ENDPOINTS ======================
+
+// Get non-teaching evaluation summary for employee
+app.get("/api/employee/non-teaching-summary", authenticate, requireRole(["Non-Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            ep.period_name as period,
+            CONCAT(evaluator.first_name, ' ', evaluator.last_name) as evaluator,
+            nte.peer_evaluation_total as productivity,
+            nte.additional_evaluations as attitude,
+            nte.certificate_points as promotional_competence,
+            nte.final_total_points * 0.25 as attendance,
+            nte.final_total_points as total_score,
+            nte.evaluation_status as status,
+            nte.evaluation_id,
+            nte.evaluation_date
+        FROM nonteaching_evaluations nte
+        JOIN evaluation_periods ep ON nte.period_id = ep.period_id
+        JOIN users u ON nte.evaluator_user_id = u.user_id
+        JOIN staff evaluator ON u.staff_id = evaluator.staff_id
+        WHERE nte.staff_id = ?
+        ORDER BY nte.evaluation_date DESC
+        LIMIT 10
+    `;
+
+    connection.query(query, [staffId], (err, results) => {
+        if (err) {
+            console.error("Non-teaching summary query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        res.json(results);
+    });
+});
+
+// Get detailed non-teaching evaluation report
+app.get("/api/employee/non-teaching-report/:id", authenticate, requireRole(["Non-Teaching Employee"]), (req, res) => {
+    const evaluationId = req.params.id;
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            nte.*,
+            s.first_name,
+            s.last_name,
+            s.department,
+            s.position,
+            ep.period_name,
+            ep.academic_year,
+            CONCAT(evaluator.first_name, ' ', evaluator.last_name) as evaluator_name
+        FROM nonteaching_evaluations nte
+        JOIN staff s ON nte.staff_id = s.staff_id
+        JOIN evaluation_periods ep ON nte.period_id = ep.period_id
+        JOIN users u ON nte.evaluator_user_id = u.user_id
+        JOIN staff evaluator ON u.staff_id = evaluator.staff_id
+        WHERE nte.evaluation_id = ? AND nte.staff_id = ?
+        LIMIT 1
+    `;
+
+    connection.query(query, [evaluationId, staffId], (err, results) => {
+        if (err) {
+            console.error("Non-teaching report query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        if (results.length === 0) {
+            return res.status(404).json({ message: "Evaluation not found" });
+        }
+
+        res.json(results[0]);
+    });
+});
+
+// ====================== CERTIFICATE ENDPOINTS (For Employees) ======================
+
+// Get employee's own certificates
+app.get("/api/employee/certificates", authenticate, requireRole(["Teaching Employee", "Non-Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            certificate_id,
+            certificate_name as title,
+            certificate_type as type,
+            organizer,
+            duration_start as date,
+            status,
+            submitted_date,
+            evaluator_comments
+        FROM certificates
+        WHERE staff_id = ?
+        ORDER BY submitted_date DESC
+    `;
+
+    connection.query(query, [staffId], (err, results) => {
+        if (err) {
+            console.error("Employee certificates query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        res.json(results);
+    });
+});
+
+// Submit new certificate
+app.post("/api/employee/certificates", authenticate, requireRole(["Teaching Employee", "Non-Teaching Employee"]), (req, res) => {
+    const { name, type, startDate, endDate, organizers } = req.body;
+    const staffId = req.user.staff_id;
+
+    // Calculate points based on certificate type
+    let points = 3.0; // Default points
+    if (type === 'Workshop') points = 4.0;
+    else if (type === 'Training') points = 3.5;
+    else if (type === 'Conference') points = 5.0;
+    else if (type === 'Award') points = 4.5;
+
+    const query = `
+        INSERT INTO certificates 
+        (staff_id, certificate_name, certificate_type, organizer, 
+         duration_start, duration_end, points_value, date_received, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    `;
+
+    connection.query(query, [
+        staffId,
+        name,
+        type,
+        organizers,
+        startDate,
+        endDate,
+        points,
+        startDate
+    ], (err, result) => {
+        if (err) {
+            console.error("Submit certificate error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        res.json({ 
+            message: "Certificate submitted successfully",
+            certificate_id: result.insertId
+        });
+    });
+});
+
+// ====================== RANKING ENDPOINTS (For Employees) ======================
+
+// Get teaching employee ranking history
+app.get("/api/employee/teaching-ranking", authenticate, requireRole(["Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            ep.academic_year as year,
+            CASE WHEN ep.semester = '1st' THEN te.final_total_points ELSE NULL END as first_semester,
+            CASE WHEN ep.semester = '2nd' THEN te.final_total_points ELSE NULL END as second_semester,
+            AVG(te.final_total_points) as annual_average
+        FROM teaching_evaluations te
+        JOIN evaluation_periods ep ON te.period_id = ep.period_id
+        WHERE te.staff_id = ?
+        GROUP BY ep.academic_year
+        ORDER BY ep.academic_year DESC
+        LIMIT 3
+    `;
+
+    connection.query(query, [staffId], (err, results) => {
+        if (err) {
+            console.error("Teaching ranking query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        res.json(results);
+    });
+});
+
+// Get non-teaching employee ranking history
+app.get("/api/employee/non-teaching-ranking", authenticate, requireRole(["Non-Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            ep.academic_year as year,
+            CASE WHEN ep.semester = '1st' THEN nte.final_total_points ELSE NULL END as first_semester,
+            CASE WHEN ep.semester = '2nd' THEN nte.final_total_points ELSE NULL END as second_semester,
+            AVG(nte.final_total_points) as annual_average
+        FROM nonteaching_evaluations nte
+        JOIN evaluation_periods ep ON nte.period_id = ep.period_id
+        WHERE nte.staff_id = ?
+        GROUP BY ep.academic_year
+        ORDER BY ep.academic_year DESC
+        LIMIT 3
+    `;
+
+    connection.query(query, [staffId], (err, results) => {
+        if (err) {
+            console.error("Non-teaching ranking query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        res.json(results);
+    });
+});
+
+// Get promotion eligibility
+app.get("/api/employee/promotion-eligibility", authenticate, requireRole(["Teaching Employee", "Non-Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            evaluation_cycle,
+            cycle_start_year,
+            cycle_end_year,
+            total_evaluations,
+            average_points,
+            minimum_required_points,
+            is_eligible,
+            promotion_status
+        FROM promotion_eligibility
+        WHERE staff_id = ?
+        ORDER BY cycle_start_year DESC
+        LIMIT 1
+    `;
+
+    connection.query(query, [staffId], (err, results) => {
+        if (err) {
+            console.error("Promotion eligibility query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        if (results.length === 0) {
+            return res.json({
+                is_eligible: 0,
+                average_points: 0,
+                message: "No promotion data available yet"
+            });
+        }
+
+        res.json(results[0]);
+    });
+});
+
+// ====================== PROFILE ENDPOINTS ======================
+
+// Get employee profile
+app.get("/api/employee/profile", authenticate, requireRole(["Teaching Employee", "Non-Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+
+    const query = `
+        SELECT 
+            s.*,
+            u.username,
+            u.email,
+            sc.category_name
+        FROM staff s
+        JOIN users u ON s.staff_id = u.staff_id
+        JOIN staff_categories sc ON s.category_id = sc.category_id
+        WHERE s.staff_id = ?
+    `;
+
+    connection.query(query, [staffId], (err, results) => {
+        if (err) {
+            console.error("Profile query error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        if (results.length === 0) {
+            return res.status(404).json({ message: "Profile not found" });
+        }
+
+        res.json(results[0]);
+    });
+});
+
+// Update employee profile
+app.put("/api/employee/profile", authenticate, requireRole(["Teaching Employee", "Non-Teaching Employee"]), (req, res) => {
+    const staffId = req.user.staff_id;
+    const { firstName, lastName, phone, email } = req.body;
+
+    connection.beginTransaction(err => {
+        if (err) {
+            console.error("Transaction error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+
+        // Update staff table
+        const updateStaffQuery = `
+            UPDATE staff 
+            SET first_name = ?, last_name = ?, phone = ?, updated_at = NOW()
+            WHERE staff_id = ?
+        `;
+
+        connection.query(updateStaffQuery, [firstName, lastName, phone, staffId], (err) => {
+            if (err) {
+                return connection.rollback(() => {
+                    console.error("Update staff error:", err);
+                    res.status(500).json({ message: "Server error" });
+                });
+            }
+
+            // Update users table
+            const updateUserQuery = `
+                UPDATE users 
+                SET email = ?
+                WHERE staff_id = ?
+            `;
+
+            connection.query(updateUserQuery, [email, staffId], (err) => {
+                if (err) {
+                    return connection.rollback(() => {
+                        console.error("Update user error:", err);
+                        res.status(500).json({ message: "Server error" });
+                    });
+                }
+
+                connection.commit(err => {
+                    if (err) {
+                        return connection.rollback(() => {
+                            console.error("Commit error:", err);
+                            res.status(500).json({ message: "Server error" });
+                        });
+                    }
+
+                    res.json({ message: "Profile updated successfully" });
+                });
+            });
+        });
+    });
+});
+
+
+
+
+
+
+
+
 // ====================== START SERVER ======================
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
-
 });
